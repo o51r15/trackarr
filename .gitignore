@@ -1,23 +1,16 @@
-# Sensitive config (contains encrypted credentials)
-homelab-config.json
-
-# Runtime data
-tracker-data/tracker-history.json
-tracker-data/tracker-sleep.json
-tracker-data/tracker-source-cache.json
-tracker-data/tracker-sources.json
-
-# Generated tracker files
-combined_raw.txt
-active_raw.txt
-working_trackers.txt
-
-# Logs
+# Sensitive / generated
+data/
 *.log
 *.log.err
-
-# Temp
 *.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
 
 # Windows
 Thumbs.db

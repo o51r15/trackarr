@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/powershell:7-ubuntu-22.04
+FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="Trackarr" \
       org.opencontainers.image.description="Automated BitTorrent tracker management for qBittorrent" \
@@ -6,31 +6,17 @@ LABEL org.opencontainers.image.title="Trackarr" \
 
 WORKDIR /app
 
-# Install Python + ping dependencies
-RUN apt-get update && apt-get install -y python3 python3-pip --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-COPY ping/requirements.txt /app/ping/requirements.txt
-RUN pip3 install --no-cache-dir -r /app/ping/requirements.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install trackerping binary
-COPY ping/trackerping.py /usr/local/bin/trackerping
-RUN chmod +x /usr/local/bin/trackerping
+COPY app/ ./app/
+COPY static/ ./static/
+COPY config.example.json .
+COPY tracker_urls.txt .
 
-# Copy bridge and scripts
-COPY trackerping.ps1        .
-COPY tracker-discovery.ps1  .
-COPY trackarr-bridge.ps1    .
-COPY trackarr-gui.html      .
-COPY tracker_urls.txt       .
-
-RUN mkdir -p /app/tracker-data /data
-RUN echo '{"port":7374}' > /app/bridge-config.json
+RUN mkdir -p /app/data
 
 EXPOSE 7374
+VOLUME ["/app/data"]
 
-VOLUME ["/app/tracker-data", "/data"]
-
-# Default entrypoint runs the bridge.
-# The bridge calls: docker run --rm ... trackarr trackerping -l -o ...
-# which re-uses this same image as the ephemeral ping runner.
-ENTRYPOINT ["pwsh", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "/app/trackarr-bridge.ps1"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7374", "--log-level", "info"]

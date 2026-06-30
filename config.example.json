@@ -1,0 +1,11 @@
+{
+  "history_days": 7,
+  "latency_timeout_ms": 3000,
+  "proxy_url": "",
+  "connection_mode": "direct",
+  "pushover_notify": false,
+  "webhook_notify": false,
+  "tracker_urls": [
+    "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all.txt"
+  ]
+}

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trackarr</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+    :root{--bg:#0b0e14;--surface:#111620;--border:#1e2a3a;--accent:#00d4ff;--accent2:#ff6b35;--success:#00e676;--warn:#ffca28;--danger:#ff3d57;--text:#c8d8e8;--muted:#4a6070;--mono:'Share Tech Mono',monospace;--sans:'Barlow',sans-serif;}
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;min-height:100vh;display:flex;flex-direction:column;}
+    header{display:flex;align-items:center;gap:18px;padding:16px 28px;border-bottom:1px solid var(--border);background:linear-gradient(90deg,#0e1520 0%,#0b0e14 100%);position:sticky;top:0;z-index:100;flex-shrink:0;}
+    .logo{width:32px;height:32px;border:2px solid var(--accent);border-radius:6px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;color:var(--accent);text-shadow:0 0 8px var(--accent);box-shadow:0 0 12px rgba(0,212,255,.2);flex-shrink:0;}
+    h1{font-size:15px;font-weight:600;letter-spacing:3px;text-transform:uppercase;color:#fff;white-space:nowrap;}
+    h1 span{color:var(--accent);}
+    .badge{margin-left:8px;padding:2px 8px;font-size:9px;font-family:var(--mono);letter-spacing:1px;border-radius:3px;background:rgba(255,107,53,.12);border:1px solid rgba(255,107,53,.3);color:var(--accent2);}
+    .status-pill{margin-left:auto;display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;letter-spacing:1px;color:var(--muted);}
+    .status-dot{width:8px;height:8px;border-radius:50%;background:var(--danger);box-shadow:0 0 6px var(--danger);transition:all .4s;}
+    .status-dot.online{background:var(--success);box-shadow:0 0 8px var(--success);}
+    main{flex:1;overflow-y:auto;padding:28px;display:flex;flex-direction:column;gap:20px;max-width:900px;width:100%;margin:0 auto;}
+    .panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+    .panel-header{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);background:rgba(255,255,255,.02);}
+    .panel-title{font-size:11px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--accent);}
+    .panel-body{padding:20px;}
+    .network-card{display:grid;grid-template-columns:auto 1fr;gap:0;border-radius:8px;overflow:hidden;border:1px solid var(--border);}
+    .network-icon{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px 28px;border-right:1px solid var(--border);background:rgba(255,255,255,.02);}
+    .network-dot{width:20px;height:20px;border-radius:50%;background:var(--muted);box-shadow:0 0 14px rgba(255,255,255,.1);margin-bottom:8px;transition:all .4s;}
+    .network-dot.vpn{background:var(--success);box-shadow:0 0 18px rgba(0,230,118,.4);}
+    .network-dot.open{background:var(--accent);box-shadow:0 0 18px rgba(0,212,255,.4);}
+    .network-dot.detecting{background:var(--warn);box-shadow:0 0 18px rgba(255,202,40,.4);animation:pulse 1.2s infinite;}
+    @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
+    .network-label{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);}
+    .network-body{padding:20px 24px;display:flex;flex-direction:column;gap:14px;justify-content:center;}
+    .network-mode-text{font-family:var(--mono);font-size:22px;font-weight:700;line-height:1;}
+    .network-mode-text.vpn{color:var(--success);}
+    .network-mode-text.open{color:var(--accent);}
+    .network-mode-text.detecting{color:var(--muted);}
+    .network-meta{display:flex;gap:24px;flex-wrap:wrap;}
+    .network-meta-item{display:flex;flex-direction:column;gap:3px;}
+    .network-meta-label{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);}
+    .network-meta-value{font-family:var(--mono);font-size:12px;color:var(--text);}
+    .network-notice{padding:10px 14px;border-radius:5px;font-size:12px;line-height:1.6;}
+    .network-notice.vpn{background:rgba(0,230,118,.06);border:1px solid rgba(0,230,118,.2);color:#8eedb8;}
+    .network-notice.open{background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.2);color:#8ed6e8;}
+    .stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+    .stat-card{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:16px;display:flex;flex-direction:column;gap:6px;}
+    .stat-label{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);}
+    .stat-value{font-family:var(--mono);font-size:18px;color:#fff;}
+    .stat-value.accent{color:var(--accent);}
+    .stat-value.muted{color:var(--muted);font-size:12px;margin-top:2px;}
+    .roadmap{display:flex;flex-direction:column;gap:8px;}
+    .phase-row{display:flex;align-items:center;gap:14px;padding:10px 14px;border-radius:6px;font-size:13px;}
+    .phase-row.done{background:rgba(0,230,118,.06);border:1px solid rgba(0,230,118,.15);}
+    .phase-row.current{background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.2);}
+    .phase-row.pending{background:rgba(255,255,255,.02);border:1px solid var(--border);opacity:.6;}
+    .phase-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+    .phase-dot.done{background:var(--success);}
+    .phase-dot.current{background:var(--accent);box-shadow:0 0 8px rgba(0,212,255,.5);}
+    .phase-dot.pending{background:var(--muted);}
+    .phase-name{font-weight:600;font-size:12px;flex-shrink:0;min-width:80px;}
+    .phase-name.done{color:var(--success);}
+    .phase-name.current{color:var(--accent);}
+    .phase-name.pending{color:var(--muted);}
+    .phase-desc{color:var(--muted);font-size:12px;}
+    #toast{position:fixed;bottom:28px;right:28px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px 18px;font-size:13px;font-family:var(--mono);opacity:0;transform:translateY(10px);transition:all .3s;z-index:9999;pointer-events:none;}
+    #toast.show{opacity:1;transform:translateY(0);}
+    #toast.ok{border-color:var(--success);color:var(--success);}
+    #toast.err{border-color:var(--danger);color:var(--danger);}
+</style>
+</head>
+<body>
+<header>
+    <div class="logo">TR</div>
+    <h1>Track<span>arr</span></h1>
+    <span class="badge">v2 · Phase 1</span>
+    <div class="status-pill">
+        <div class="status-dot" id="bridgeDot"></div>
+        <span id="bridgeLabel">CONNECTING</span>
+    </div>
+</header>
+
+<main>
+    <!-- Network Mode -->
+    <div class="network-card" id="networkCard">
+        <div class="network-icon">
+            <div class="network-dot detecting" id="networkDot"></div>
+            <div class="network-label">Connection</div>
+        </div>
+        <div class="network-body">
+            <div class="network-mode-text detecting" id="networkModeText">Detecting...</div>
+            <div class="network-meta">
+                <div class="network-meta-item">
+                    <span class="network-meta-label">Gateway</span>
+                    <span class="network-meta-value" id="networkGateway">—</span>
+                </div>
+                <div class="network-meta-item">
+                    <span class="network-meta-label">External IP</span>
+                    <span class="network-meta-value" id="networkExternalIp">—</span>
+                </div>
+            </div>
+            <div class="network-notice" id="networkNotice" style="display:none"></div>
+        </div>
+    </div>
+
+    <!-- Status cards -->
+    <div class="stat-grid">
+        <div class="stat-card">
+            <div class="stat-label">Bridge</div>
+            <div class="stat-value accent" id="statBridge">—</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">API Docs</div>
+            <div class="stat-value accent" style="font-size:13px;margin-top:4px">
+                <a href="/api/docs" style="color:var(--accent);text-decoration:none" target="_blank">/api/docs ↗</a>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Version</div>
+            <div class="stat-value" id="statVersion">—</div>
+        </div>
+    </div>
+
+    <!-- Build progress -->
+    <div class="panel">
+        <div class="panel-header"><div class="panel-title">Build Progress</div></div>
+        <div class="panel-body">
+            <div class="roadmap">
+                <div class="phase-row done">
+                    <div class="phase-dot done"></div>
+                    <span class="phase-name done">Phase 1</span>
+                    <span class="phase-desc">Foundation — FastAPI, config, VPN detection, SSE job skeleton</span>
+                </div>
+                <div class="phase-row current">
+                    <div class="phase-dot current"></div>
+                    <span class="phase-name current">Phase 2</span>
+                    <span class="phase-desc">Core pipeline — collect, ping, latency, sleep, qBittorrent inject</span>
+                </div>
+                <div class="phase-row pending">
+                    <div class="phase-dot pending"></div>
+                    <span class="phase-name pending">Phase 3</span>
+                    <span class="phase-desc">API + SSE streaming — job manager, all REST endpoints, tracker history</span>
+                </div>
+                <div class="phase-row pending">
+                    <div class="phase-dot pending"></div>
+                    <span class="phase-name pending">Phase 4</span>
+                    <span class="phase-desc">Scheduler — internal async scheduler, schedule CRUD</span>
+                </div>
+                <div class="phase-row pending">
+                    <div class="phase-dot pending"></div>
+                    <span class="phase-name pending">Phase 5</span>
+                    <span class="phase-desc">Source discovery — port tracker-discovery logic to Python</span>
+                </div>
+                <div class="phase-row pending">
+                    <div class="phase-dot pending"></div>
+                    <span class="phase-name pending">Phase 6</span>
+                    <span class="phase-desc">Notifications — Pushover + webhook</span>
+                </div>
+                <div class="phase-row pending">
+                    <div class="phase-dot pending"></div>
+                    <span class="phase-name pending">Phase 7</span>
+                    <span class="phase-desc">Full GUI — all 5 tabs, VPN-aware config panel, SSE log stream</span>
+                </div>
+                <div class="phase-row pending">
+                    <div class="phase-dot pending"></div>
+                    <span class="phase-name pending">Phase 8</span>
+                    <span class="phase-desc">Packaging — final Dockerfile, compose examples, CI update</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+    const BRIDGE = window.location.origin;
+
+    async function ping() {
+        try {
+            const r = await fetch(`${BRIDGE}/api/ping`, { cache: 'no-store' });
+            if (r.ok) {
+                const d = await r.json();
+                document.getElementById('bridgeDot').className = 'status-dot online';
+                document.getElementById('bridgeLabel').textContent = 'ONLINE';
+                document.getElementById('statBridge').textContent = 'Online';
+                document.getElementById('statVersion').textContent = `v${d.version}`;
+                return true;
+            }
+        } catch {}
+        document.getElementById('bridgeDot').className = 'status-dot';
+        document.getElementById('bridgeLabel').textContent = 'OFFLINE';
+        document.getElementById('statBridge').textContent = 'Offline';
+        return false;
+    }
+
+    async function loadNetworkMode() {
+        try {
+            const r = await fetch(`${BRIDGE}/api/network-mode`, { cache: 'no-store' });
+            if (!r.ok) return;
+            const d = await r.json();
+
+            const dot  = document.getElementById('networkDot');
+            const text = document.getElementById('networkModeText');
+            const notice = document.getElementById('networkNotice');
+
+            if (d.vpn_detected) {
+                dot.className  = 'network-dot vpn';
+                text.className = 'network-mode-text vpn';
+                text.textContent = 'VPN Detected';
+                notice.className = 'network-notice vpn';
+                notice.textContent = 'Traffic is routed through a VPN Docker network. Proxy and direct connection options are disabled.';
+                notice.style.display = '';
+            } else {
+                dot.className  = 'network-dot open';
+                text.className = 'network-mode-text open';
+                text.textContent = 'No VPN — ' + (d.mode === 'proxy' ? 'Proxy' : 'Direct');
+                notice.className = 'network-notice open';
+                notice.textContent = 'No VPN network detected. Proxy and direct connection options are available.';
+                notice.style.display = '';
+            }
+
+            document.getElementById('networkGateway').textContent   = d.gateway      || '—';
+            document.getElementById('networkExternalIp').textContent = d.external_ip  || '—';
+        } catch {}
+    }
+
+    async function init() {
+        const online = await ping();
+        if (online) await loadNetworkMode();
+    }
+
+    setInterval(ping, 10_000);
+    init();
+
+    let tTimer;
+    function toast(msg, type) {
+        const el = document.getElementById('toast');
+        el.textContent = msg;
+        el.className = 'show ' + type;
+        clearTimeout(tTimer);
+        tTimer = setTimeout(() => el.className = '', 2800);
+    }
+</script>
+</body>
+</html>
