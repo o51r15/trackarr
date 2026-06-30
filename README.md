@@ -1,88 +1,131 @@
 # Trackarr
 
-Automatically downloads, pings, and injects BitTorrent trackers into qBittorrent.
-Supports VPN Docker networks, SOCKS5 proxies, HTTPS proxies, or direct connections.
+Automated BitTorrent tracker management for qBittorrent. Collects trackers from
+multiple sources, pings them for liveness, measures latency, and injects the
+working set into qBittorrent — on a schedule or on demand.
+
+Rewritten in Python (FastAPI). Container-only deployment. No PowerShell, no
+Windows host dependency, no Docker socket, no DPAPI.
+
+> **Status:** Core rewrite complete (Phases 1–7) and verified, including a live
+> browser walkthrough of the full GUI. Scheduler tab has not yet been manually
+> clicked through — functionally tested via the API, but not yet exercised
+> through the GUI by a human. Packaging/CI polish (Phase 8) is the remaining work.
+
+---
 
 ## Features
 
-- Multi-source tracker collection (raw URL lists, GitHub repos, website scrapes, manual entries)
-- Selectable ping mode: Docker VPN network, SOCKS5 proxy, HTTPS proxy, or direct
-- Latency measurement for all surviving trackers
-- Automatic sleep/hibernate system with progressive backoff for repeated failures
-- Per-tracker history with uptime percentages and trend indicators
-- Source discovery engine (well-known aggregators + rate-limited GitHub search)
-- Web GUI on port 7374 — all 5 tabs in one HTML file
+- Multi-source tracker collection: raw `.txt` list URLs, GitHub repo crawling
+  (cached by commit SHA), website scraping, manual entries
+- Async ping engine: UDP BitTorrent protocol, HTTP/HTTPS announce, WebSocket
+- TCP latency measurement for every tracker that passes
+- Sleep/hibernate system with progressive backoff (watching → 48h sleep → 7-day
+  hibernate) for repeatedly-failing trackers
+- 7-day tracker history with uptime tracking
+- Source discovery engine: well-known aggregators checked every run, GitHub
+  search rate-limited to once per 7 days, with a preview/approve/dismiss flow
+- Internal scheduler: daily, weekly, hourly, or interval-based runs — no cron,
+  no external scheduler container
+- Pushover and/or webhook notifications on run completion
+- Auto-detected VPN routing: if the container is attached to a VPN Docker
+  network, the GUI locks to VPN mode automatically; otherwise SOCKS5/HTTP
+  proxy or direct connection options are available
+- Single web GUI, six tabs: Execution, Config, Sources, Stats, Discovery,
+  Scheduler — live log streaming via Server-Sent Events, no polling
+
+---
+
+## Architecture
+
+One container does everything. The HTTP API/GUI server and the ping engine
+both run in-process inside the same FastAPI app — there is no second image,
+no Docker-in-Docker, no ephemeral ping container. Pinging is a native asyncio
+task, not a subprocess.
+
+VPN routing is handled entirely by the Docker network the container is
+attached to (e.g. via Gluetun or another VPN provider container) — Trackarr
+detects this at startup by inspecting its own network gateway and adjusts
+the GUI accordingly. There is no manual VPN network name to configure.
+
+All credentials are environment variables, set in your `docker-compose.yml`.
+Nothing sensitive is stored in a config file or entered through the GUI.
 
 ---
 
 ## Installation
 
-### Option 1 — Docker (recommended)
-
-One image does everything. The bridge runs as a persistent container; when a ping
-cycle runs, it spins up a second ephemeral instance of the same image to do the
-pinging, then destroys it.
-
-```
-docker pull ghcr.io/o51r15/trackarr:latest
-```
-
-Create your config:
-```
-curl -o homelab-config.json https://raw.githubusercontent.com/o51r15/trackarr/master/homelab-config.example.json
-```
-
-Edit `homelab-config.json`, then run:
-```
-docker run -d \
-  --name trackarr \
-  -p 7374:7374 \
-  -v ./homelab-config.json:/app/homelab-config.json \
-  -v ./tracker-data:/app/tracker-data \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  ghcr.io/o51r15/trackarr:latest
+```yaml
+services:
+  trackarr:
+    image: ghcr.io/o51r15/trackarr:latest
+    ports:
+      - "7374:7374"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - QBT_URL=http://192.168.1.x:8080
+      - QBT_USER=admin
+      - QBT_PASS=yourpassword
+      # Optional:
+      - GITHUB_TOKEN=
+      - PUSHOVER_USER=
+      - PUSHOVER_TOKEN=
+      - WEBHOOK_URL=
 ```
 
-Open http://localhost:7374.
+To route pings through a VPN, attach the container to the VPN provider's
+network instead of exposing a port directly, e.g. with Gluetun:
 
-> The Docker socket mount is required so the bridge can spin up ephemeral ping containers.
+```yaml
+services:
+  trackarr:
+    image: ghcr.io/o51r15/trackarr:latest
+    network_mode: "service:gluetun"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - QBT_URL=http://192.168.1.x:8080
+      - QBT_USER=admin
+      - QBT_PASS=yourpassword
+    depends_on:
+      - gluetun
+
+  gluetun:
+    image: qmcgaw/gluetun
+    # ... gluetun config
+```
+
+VPN attachment is auto-detected at container startup — no further
+configuration needed. Open `http://<host>:7374`.
 
 ---
 
-### Option 2 — Windows (run directly on host)
+## Environment variables
 
-**Requirements:** PowerShell 5.1+, Docker Desktop, qBittorrent with Web API enabled.
-
-1. Clone the repo
-2. Copy `homelab-config.example.json` to `homelab-config.json` and fill in your settings
-3. Encrypt your qBittorrent password:
-   ```powershell
-   ConvertFrom-SecureString (ConvertTo-SecureString "your_password" -AsPlainText -Force)
-   ```
-   Paste the output as `tp.pass` in `homelab-config.json`
-4. Set `tp.dir` to the full path of the repo directory
-5. Set `tp.script` to the full path of `trackerping.ps1`
-6. Set `tp.pingImage` to `ghcr.io/o51r15/trackarr:latest` (or omit — that is the default)
-7. Run the bridge:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File trackarr-bridge.ps1
-   ```
-8. Open http://localhost:7374
-
----
-
-## Ping modes
-
-Configured in the GUI under **Config → Ping Mode**, or as `tp.pingMode` in `homelab-config.json`.
-
-| Mode | Description | UDP trackers |
+| Variable | Required | Purpose |
 |---|---|---|
-| `docker-vpn` | Ping container joins a VPN Docker network (e.g. Gluetun). IP check confirms traffic exits through VPN. | Supported |
-| `socks5` | Ping container uses a SOCKS5 proxy via `ALL_PROXY`. | **Skipped** — SOCKS5 cannot tunnel UDP |
-| `https-proxy` | Ping container uses an HTTP CONNECT proxy via `HTTPS_PROXY`. | **Skipped** — HTTP proxy cannot tunnel UDP |
-| `direct` | No VPN or proxy. Pings go out on the host network. | Supported |
+| `QBT_URL` | Yes | qBittorrent Web UI URL |
+| `QBT_USER` | Yes | qBittorrent username |
+| `QBT_PASS` | Yes | qBittorrent password (plain text — scope this container's network access accordingly) |
+| `GITHUB_TOKEN` | No | Raises GitHub API rate limit for repo crawling/discovery |
+| `PUSHOVER_USER` | No | Pushover user key, for completion notifications |
+| `PUSHOVER_TOKEN` | No | Pushover API token |
+| `WEBHOOK_URL` | No | Generic webhook URL, POSTed a JSON payload on run completion |
 
-Set `tp.proxyUrl` for proxy modes, e.g. `socks5://192.168.1.x:1080` or `http://192.168.1.x:3128`.
+Non-sensitive settings (history retention, latency timeout, proxy URL,
+connection mode, tracker URL list, notification toggles) live in
+`/app/data/config.json` and are editable from the GUI's Config tab.
+
+---
+
+## Connection modes
+
+| Mode | How it's selected | UDP trackers |
+|---|---|---|
+| VPN | Auto-detected from the container's network gateway | Supported |
+| Direct | Default when no VPN network is detected | Supported |
+| Proxy (SOCKS5/HTTP) | Selected in the GUI when no VPN is detected | **Skipped** — proxies cannot tunnel UDP |
 
 ---
 
@@ -90,28 +133,45 @@ Set `tp.proxyUrl` for proxy modes, e.g. `socks5://192.168.1.x:1080` or `http://1
 
 ```
 trackarr/
-├── ping/
-│   ├── trackerping.py       Async ping binary — UDP, HTTP/HTTPS, WebSocket
-│   └── requirements.txt     Python deps (bundled into the main Docker image)
-├── trackerping.ps1          Core script — collect, ping, inject
-├── tracker-discovery.ps1    Finds new tracker list sources
-├── trackarr-bridge.ps1      HTTP bridge (serves GUI + API on port 7374)
-├── trackarr-gui.html        Single-file web GUI
-├── Dockerfile               Builds the single trackarr image (bridge + ping binary)
-├── tracker_urls.txt         Raw .txt list URLs (one per line)
-├── homelab-config.json      Your config (gitignored)
-├── homelab-config.example.json  Config template
-├── bridge-config.json       Bridge port config
-└── tracker-data/            Runtime data (gitignored)
-    ├── tracker-sources.json
-    ├── tracker-source-cache.json
-    ├── tracker-sleep.json
-    └── tracker-history.json
+├── app/
+│   ├── main.py            FastAPI app, startup/shutdown lifecycle
+│   ├── config.py          Env var credentials + AppConfig (non-sensitive settings)
+│   ├── network.py         VPN auto-detection
+│   ├── api/
+│   │   ├── router.py      All REST endpoints
+│   │   └── jobs.py        Async job manager, SSE streaming
+│   └── core/
+│       ├── collect.py     Source collection pipeline
+│       ├── ping.py        Async ping engine (UDP, HTTP/HTTPS, WS)
+│       ├── latency.py     TCP latency measurement
+│       ├── inject.py      qBittorrent API client
+│       ├── sleep.py       Sleep/hibernate state
+│       ├── history.py     7-day tracker run history
+│       ├── sources.py     Tracker source CRUD + discovery state
+│       ├── discovery.py   Source discovery engine
+│       ├── scheduler.py   Internal async scheduler
+│       ├── notify.py      Pushover + webhook
+│       └── run.py         Full pipeline orchestration
+├── static/
+│   └── gui.html           Single-file web GUI
+├── data/                  Mounted volume — all persistent state (gitignored)
+├── Dockerfile
+├── config.example.json
+└── requirements.txt
 ```
+
+---
+
+## API
+
+Interactive docs at `/api/docs` once running.
 
 ---
 
 ## Roadmap
 
-- [ ] Replace Windows DPAPI credential storage for Linux/Docker compatibility
-- [ ] Scheduler built into the bridge
+- [ ] docker-compose example files in-repo
+- [ ] SOCKS5 proxy support (`aiohttp` only natively supports HTTP proxies —
+      `aiohttp-socks` needs to be added for SOCKS5 to actually route traffic;
+      currently accepted in config but not functional)
+- [ ] SQLite for tracker history, if JSON file size becomes a problem at scale
