@@ -8,6 +8,7 @@ verifies the update took effect.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -37,6 +38,15 @@ async def login(session: aiohttp.ClientSession, qbt_url: str, user: str, passwor
             text = await resp.text()
             if "Fails" in text:
                 raise QbtAuthError("qBittorrent login failed — check credentials.")
+    except asyncio.TimeoutError as exc:
+        # A bare asyncio.TimeoutError is NOT a subclass of aiohttp.ClientError in
+        # most aiohttp versions, so it must be caught separately or it silently
+        # escapes this function with a useless empty str() representation,
+        # surfacing upstream as "Unexpected error:" with no detail at all.
+        raise QbtConnectionError(
+            f"Timed out connecting to qBittorrent at {qbt_url} (15s). "
+            f"Check the URL/port is correct and reachable from this container's network."
+        ) from exc
     except aiohttp.ClientError as exc:
         raise QbtConnectionError(f"Could not reach qBittorrent: {exc}") from exc
 
@@ -57,6 +67,10 @@ async def inject_trackers(
         ) as resp:
             if resp.status not in (200, 204):
                 raise QbtConnectionError(f"Failed to update preferences. HTTP {resp.status}")
+    except asyncio.TimeoutError as exc:
+        raise QbtConnectionError(
+            f"Timed out updating preferences at {qbt_url} (15s)."
+        ) from exc
     except aiohttp.ClientError as exc:
         raise QbtConnectionError(f"Failed to update qBittorrent preferences: {exc}") from exc
 

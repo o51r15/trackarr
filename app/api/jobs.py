@@ -93,6 +93,19 @@ async def _log_to_job(job: Job, message: str, level: str = "info") -> None:
     job._new_line_event.set()
 
 
+def _describe_exception(exc: Exception) -> str:
+    """
+    Some exceptions (notably asyncio.TimeoutError) have an empty str() by
+    design, which made "Unexpected error: {exc}" log lines render as
+    "Unexpected error:" with nothing after it — useless for diagnosing a
+    real connection timeout. Always include the exception type name, and
+    only append str(exc) if it actually has content.
+    """
+    type_name = type(exc).__name__
+    text = str(exc).strip()
+    return f"{type_name}: {text}" if text else f"{type_name} (no further detail provided by the exception)"
+
+
 async def _execute_trackerping(job: Job, app_state) -> None:
     job.status = JobStatus.RUNNING
 
@@ -125,11 +138,12 @@ async def _execute_trackerping(job: Job, app_state) -> None:
         raise
     except Exception as exc:
         logger.exception("Job %s crashed", job.id)
-        await log(f"Unexpected error: {exc}", "error")
+        desc = _describe_exception(exc)
+        await log(f"Unexpected error: {desc}", "error")
         job.status = JobStatus.FAILED
-        job.summary = {"success": False, "error": str(exc)}
+        job.summary = {"success": False, "error": desc}
         try:
-            await notify_module.notify_run_complete(app_state.config, app_state.settings, False, error=str(exc))
+            await notify_module.notify_run_complete(app_state.config, app_state.settings, False, error=desc)
         except Exception:
             pass
     finally:
@@ -188,12 +202,13 @@ async def _execute_discovery(job: Job, app_state) -> None:
         raise
     except Exception as exc:
         logger.exception("Discovery job %s crashed", job.id)
-        await log(f"Unexpected error: {exc}", "error")
+        desc = _describe_exception(exc)
+        await log(f"Unexpected error: {desc}", "error")
         job.status = JobStatus.FAILED
-        job.summary = {"success": False, "error": str(exc)}
+        job.summary = {"success": False, "error": desc}
         try:
             await notify_module.notify_discovery_complete(
-                app_state.config, app_state.settings, 0, False, str(exc)
+                app_state.config, app_state.settings, 0, False, desc
             )
         except Exception:
             pass
