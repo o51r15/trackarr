@@ -40,6 +40,8 @@ class Env(BaseSettings):
     pushover_token: str = ""
     github_token:   str = ""
     webhook_url:    str = ""
+    ollama_url:     str = ""     # e.g. http://192.168.1.x:11434 — empty disables quality assessment entirely
+    ollama_model:   str = ""     # e.g. gemma4:latest — must be explicitly set, no default model assumed
 
 
 # ---------------------------------------------------------------------------

@@ -196,13 +196,17 @@ async def preview_candidate(request: Request):
     """
     Fetches a candidate source URL and reports how many of its trackers are
     NOT already in the current known pool (cached from the most recent run).
+    Also computes deterministic quality metrics, and — if OLLAMA_URL/OLLAMA_MODEL
+    are configured — an LLM-judged qualitative assessment alongside them.
     """
     import aiohttp
     from ..core.collect import VALID_SCHEMES, SCRAPE_PATTERN, DEFAULT_USER_AGENT
+    from ..core import quality_metrics, quality_assessment
 
     body = await request.json()
     url = (body.get("url") or "").strip()
     source_type = body.get("source_type", "raw_list")
+    label = body.get("label", "")
     if not url:
         return JSONResponse({"ok": False, "error": "url required"}, status_code=422)
 
@@ -233,13 +237,33 @@ async def preview_candidate(request: Request):
         })
 
     new_trackers = [t for t in found if t not in known]
-    return {
+
+    metrics = quality_metrics.compute_metrics(content, known)
+
+    result = {
         "ok": True,
         "total": len(found),
         "new_count": len(new_trackers),
         "existing_count": len(found) - len(new_trackers),
         "sample": new_trackers[:20],
+        "metrics": {
+            "format_score": metrics.format_score,
+            "diversity_score": metrics.diversity_score,
+            "overlap_pct": metrics.overlap_pct,
+            "protocol_counts": metrics.protocol_counts,
+            "red_flags": metrics.red_flags,
+        },
     }
+
+    e = env
+    if e.ollama_url and e.ollama_model:
+        assessment = await quality_assessment.get_assessment(
+            ollama_url=e.ollama_url, model=e.ollama_model,
+            content_sample=content, metrics=metrics, label=label or url,
+        )
+        result["quality"] = assessment.model_dump()
+
+    return result
 
 
 @router.post("/tracker-sources/approve", tags=["discovery"])
