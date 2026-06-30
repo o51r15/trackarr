@@ -7,6 +7,7 @@ This is what a "Run Now" click or scheduled trigger actually executes.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,8 +22,33 @@ from ..config import AppConfig, Env
 logger = logging.getLogger(__name__)
 
 CACHE_FILE = Path("/app/data/tracker-source-cache.json")
+KNOWN_TRACKERS_CACHE_FILE = Path("/app/data/known-trackers-cache.json")
 
 LogFn = Callable[[str, str], Awaitable[None]]
+
+
+def _save_known_trackers_cache(trackers: set[str]) -> None:
+    """
+    Persists the most recent full tracker pool so the discovery preview
+    endpoint can diff a candidate source against "what we already have"
+    without needing to re-run the full collection pipeline.
+    """
+    try:
+        KNOWN_TRACKERS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        KNOWN_TRACKERS_CACHE_FILE.write_text(
+            json.dumps(sorted(trackers)), encoding="utf-8"
+        )
+    except Exception as exc:
+        logger.warning("Could not save known-trackers-cache.json: %s", exc)
+
+
+def load_known_trackers_cache() -> set[str]:
+    if not KNOWN_TRACKERS_CACHE_FILE.exists():
+        return set()
+    try:
+        return set(json.loads(KNOWN_TRACKERS_CACHE_FILE.read_text(encoding="utf-8")))
+    except Exception:
+        return set()
 
 
 @dataclass
@@ -79,6 +105,8 @@ async def run_trackerping(
         summary.error = "No trackers collected."
         await log(summary.error, "error")
         return summary
+
+    _save_known_trackers_cache(collection.trackers)
 
     # ---------------------------------------------------------------------
     # 1.5 Sleep/hibernate filtering

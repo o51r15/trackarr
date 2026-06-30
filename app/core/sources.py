@@ -32,10 +32,28 @@ class WebsiteScrape(BaseModel):
     label: str = ""
 
 
+class DiscoveryCandidate(BaseModel):
+    url:             str
+    raw_url:         str = ""
+    source_type:     str            # "raw_list" | "github_repo" | "website_scrape"
+    label:           str = ""
+    stars:           int | None = None
+    last_commit:     str | None = None
+    discovered_date: str = ""
+
+
+class DiscoveryState(BaseModel):
+    last_github_run:        str | None = None
+    minimum_interval_days:  int = 7
+    candidates:              list[DiscoveryCandidate] = []
+    dismissed:                list[str] = []
+
+
 class TrackerSources(BaseModel):
     github_repos:    list[GithubRepo]      = []
     website_scrape:  list[WebsiteScrape]   = []
     manual:          list[str]             = []
+    discovery:       DiscoveryState         = DiscoveryState()
 
 
 def load_sources() -> TrackerSources:
@@ -87,5 +105,49 @@ def remove_website_scrape(scrape_id: str) -> TrackerSources:
 def set_manual(trackers: list[str]) -> TrackerSources:
     sources = load_sources()
     sources.manual = [t.strip() for t in trackers if t.strip()]
+    save_sources(sources)
+    return sources
+
+
+# ---------------------------------------------------------------------------
+# Discovery candidate management
+# ---------------------------------------------------------------------------
+
+def known_source_urls(sources: TrackerSources, tracker_urls: list[str]) -> set[str]:
+    """All URLs already configured as sources, across every source type."""
+    known = set(tracker_urls)
+    known.update(r.url for r in sources.github_repos)
+    known.update(s.url for s in sources.website_scrape)
+    return known
+
+
+def approve_candidate(candidate: DiscoveryCandidate) -> TrackerSources:
+    """
+    Moves a candidate from the pending list into the appropriate source type.
+    Note: raw_list candidates are NOT added here — those go into AppConfig.tracker_urls,
+    which the router endpoint handles directly since it has access to app.state.config.
+    """
+    sources = load_sources()
+    if candidate.source_type == "github_repo":
+        sources.github_repos.append(GithubRepo(url=candidate.url, label=candidate.label or candidate.url))
+    elif candidate.source_type == "website_scrape":
+        sources.website_scrape.append(WebsiteScrape(url=candidate.url, label=candidate.label or candidate.url))
+    sources.discovery.candidates = [c for c in sources.discovery.candidates if c.url != candidate.url]
+    save_sources(sources)
+    return sources
+
+
+def dismiss_candidate(url: str) -> TrackerSources:
+    sources = load_sources()
+    if url not in sources.discovery.dismissed:
+        sources.discovery.dismissed.append(url)
+    sources.discovery.candidates = [c for c in sources.discovery.candidates if c.url != url]
+    save_sources(sources)
+    return sources
+
+
+def clear_dismissed() -> TrackerSources:
+    sources = load_sources()
+    sources.discovery.dismissed = []
     save_sources(sources)
     return sources

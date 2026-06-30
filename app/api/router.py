@@ -13,7 +13,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..config import AppConfig, load_app_config, save_app_config, env
+from ..core import discovery as discovery_module
 from ..core import history as history_module
+from ..core import run as run_module
 from ..core import scheduler as scheduler_module
 from ..core import sleep as sleep_module
 from ..core import sources as sources_module
@@ -180,6 +182,109 @@ async def set_manual_trackers(request: Request):
     if not isinstance(trackers, list):
         return JSONResponse({"ok": False, "error": "trackers must be a list"}, status_code=422)
     sources = sources_module.set_manual(trackers)
+    return {"ok": True, "sources": sources.model_dump()}
+
+
+# ---------------------------------------------------------------------------
+# Tracker source discovery
+# ---------------------------------------------------------------------------
+# Triggering a discovery run is POST /api/jobs/run/discovery (job-based, SSE-streamable),
+# consistent with how trackerping runs are triggered.
+
+@router.post("/tracker-sources/preview", tags=["discovery"])
+async def preview_candidate(request: Request):
+    """
+    Fetches a candidate source URL and reports how many of its trackers are
+    NOT already in the current known pool (cached from the most recent run).
+    """
+    import aiohttp
+    from ..core.collect import VALID_SCHEMES, SCRAPE_PATTERN, DEFAULT_USER_AGENT
+
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    source_type = body.get("source_type", "raw_list")
+    if not url:
+        return JSONResponse({"ok": False, "error": "url required"}, status_code=422)
+
+    if source_type == "github_repo":
+        return {
+            "ok": True, "total": 0, "new_count": 0, "existing_count": 0, "sample": [],
+            "note": "GitHub repo sources are scanned fully during TrackerPing. Use Add Source to include this repo.",
+        }
+
+    known = run_module.load_known_trackers_cache()
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=15),
+                headers={"User-Agent": DEFAULT_USER_AGENT},
+            ) as resp:
+                content = await resp.text(errors="ignore")
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"Failed to fetch URL: {exc}"}, status_code=502)
+
+    if source_type == "website_scrape":
+        found = sorted({m.rstrip("/") for m in SCRAPE_PATTERN.findall(content)})
+    else:
+        found = sorted({
+            ln.strip() for ln in content.split("\n")
+            if ln.strip() and VALID_SCHEMES.match(ln.strip())
+        })
+
+    new_trackers = [t for t in found if t not in known]
+    return {
+        "ok": True,
+        "total": len(found),
+        "new_count": len(new_trackers),
+        "existing_count": len(found) - len(new_trackers),
+        "sample": new_trackers[:20],
+    }
+
+
+@router.post("/tracker-sources/approve", tags=["discovery"])
+async def approve_candidate(request: Request):
+    body = await request.json()
+    candidate_data = body.get("candidate")
+    if not candidate_data:
+        return JSONResponse({"ok": False, "error": "candidate required"}, status_code=422)
+
+    try:
+        candidate = sources_module.DiscoveryCandidate.model_validate(candidate_data)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+
+    if candidate.source_type == "raw_list":
+        # Raw list URLs live in AppConfig.tracker_urls, not tracker-sources.json
+        config: AppConfig = request.app.state.config
+        raw_url = candidate.raw_url or candidate.url
+        if raw_url not in config.tracker_urls:
+            config.tracker_urls.append(raw_url)
+            save_app_config(config)
+            request.app.state.config = config
+        sources = sources_module.dismiss_candidate(candidate.url)   # remove from pending list
+        # dismiss_candidate also adds to dismissed[] which is wrong here — undo that part
+        sources.discovery.dismissed = [u for u in sources.discovery.dismissed if u != candidate.url]
+        sources_module.save_sources(sources)
+    else:
+        sources = sources_module.approve_candidate(candidate)
+
+    return {"ok": True, "sources": sources.model_dump()}
+
+
+@router.post("/tracker-sources/dismiss", tags=["discovery"])
+async def dismiss_candidate_endpoint(request: Request):
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    if not url:
+        return JSONResponse({"ok": False, "error": "url required"}, status_code=422)
+    sources = sources_module.dismiss_candidate(url)
+    return {"ok": True, "sources": sources.model_dump()}
+
+
+@router.post("/tracker-sources/clear-dismissed", tags=["discovery"])
+async def clear_dismissed_endpoint():
+    sources = sources_module.clear_dismissed()
     return {"ok": True, "sources": sources.model_dump()}
 
 

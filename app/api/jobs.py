@@ -20,6 +20,7 @@ from typing import AsyncGenerator
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
+from ..core import discovery as discovery_module
 from ..core.run import run_trackerping
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,45 @@ async def trigger_scheduled_run(app_state) -> bool:
     job.task = asyncio.current_task()
     await _execute_trackerping(job, app_state)
     return job.status == JobStatus.DONE
+
+
+async def _execute_discovery(job: Job, app_state) -> None:
+    job.status = JobStatus.RUNNING
+
+    async def log(message: str, level: str = "info") -> None:
+        await _log_to_job(job, message, level)
+        logger.info("[job %s] %s", job.id, message)
+
+    try:
+        config = app_state.config
+        env = app_state.settings
+
+        sources = await discovery_module.run_discovery(config.tracker_urls, env.github_token, log)
+        job.summary = {
+            "success": True,
+            "candidates": len(sources.discovery.candidates),
+        }
+        job.status = JobStatus.DONE
+    except asyncio.CancelledError:
+        job.status = JobStatus.ABORTED
+        await log("Discovery aborted by user.", "warn")
+        raise
+    except Exception as exc:
+        logger.exception("Discovery job %s crashed", job.id)
+        await log(f"Unexpected error: {exc}", "error")
+        job.status = JobStatus.FAILED
+        job.summary = {"success": False, "error": str(exc)}
+    finally:
+        job.ended_at = time.time()
+        job._new_line_event.set()
+
+
+@router.post("/run/discovery")
+async def start_discovery(request: Request):
+    prune_jobs()
+    job = create_job("discovery")
+    job.task = asyncio.create_task(_execute_discovery(job, request.app.state))
+    return {"ok": True, "job_id": job.id}
 
 
 @router.get("/{job_id}")
