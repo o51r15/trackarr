@@ -7,7 +7,6 @@ This is what a "Run Now" click or scheduled trigger actually executes.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,12 +15,12 @@ from typing import Awaitable, Callable
 import aiohttp
 
 from . import collect, history, inject, latency, ping, sleep
+from . import sources as sources_module
 from ..config import AppConfig, Env
 
 logger = logging.getLogger(__name__)
 
 CACHE_FILE = Path("/app/data/tracker-source-cache.json")
-SOURCES_FILE = Path("/app/data/tracker-sources.json")
 
 LogFn = Callable[[str, str], Awaitable[None]]
 
@@ -34,15 +33,6 @@ class RunSummary:
     success: bool = False
     error: str | None = None
     results: list[dict] = field(default_factory=list)   # [{url, status, latency_ms}, ...]
-
-
-async def load_sources() -> dict:
-    if not SOURCES_FILE.exists():
-        return {"githubRepos": [], "websiteScrape": [], "manual": []}
-    try:
-        return json.loads(SOURCES_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {"githubRepos": [], "websiteScrape": [], "manual": []}
 
 
 async def run_trackerping(
@@ -61,16 +51,16 @@ async def run_trackerping(
     # ---------------------------------------------------------------------
     # 1. Collect
     # ---------------------------------------------------------------------
-    sources = await load_sources()
+    sources = sources_module.load_sources()
     github_repos = [
-        collect.GithubRepoSource(id=r.get("id", ""), url=r["url"], label=r.get("label", ""))
-        for r in sources.get("githubRepos", []) if r.get("url")
+        collect.GithubRepoSource(id=r.id, url=r.url, label=r.label)
+        for r in sources.github_repos
     ]
     website_scrapes = [
-        collect.WebsiteScrapeSource(id=s.get("id", ""), url=s["url"], label=s.get("label", ""))
-        for s in sources.get("websiteScrape", []) if s.get("url")
+        collect.WebsiteScrapeSource(id=s.id, url=s.url, label=s.label)
+        for s in sources.website_scrape
     ]
-    manual_trackers = sources.get("manual", [])
+    manual_trackers = sources.manual
 
     async with aiohttp.ClientSession() as session:
         collection = await collect.collect_all(

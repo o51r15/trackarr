@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from ..config import AppConfig, load_app_config, save_app_config, env
 from ..core import history as history_module
 from ..core import sleep as sleep_module
+from ..core import sources as sources_module
 from . import jobs as job_router
 
 logger = logging.getLogger(__name__)
@@ -128,3 +129,54 @@ async def wake_tracker(request: Request):
 async def wake_all_trackers():
     sleep_module.save_sleep_state({})
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Tracker sources (GitHub repos, website scrapes, manual entries)
+# ---------------------------------------------------------------------------
+
+@router.get("/tracker-sources", tags=["trackers"])
+async def get_tracker_sources():
+    return sources_module.load_sources().model_dump()
+
+
+@router.post("/tracker-sources/github-repos", tags=["trackers"])
+async def add_github_repo(request: Request):
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    if not url:
+        return JSONResponse({"ok": False, "error": "url required"}, status_code=422)
+    sources = sources_module.add_github_repo(url, body.get("label", ""))
+    return {"ok": True, "sources": sources.model_dump()}
+
+
+@router.delete("/tracker-sources/github-repos/{repo_id}", tags=["trackers"])
+async def delete_github_repo(repo_id: str):
+    sources = sources_module.remove_github_repo(repo_id)
+    return {"ok": True, "sources": sources.model_dump()}
+
+
+@router.post("/tracker-sources/website-scrapes", tags=["trackers"])
+async def add_website_scrape(request: Request):
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    if not url:
+        return JSONResponse({"ok": False, "error": "url required"}, status_code=422)
+    sources = sources_module.add_website_scrape(url, body.get("label", ""))
+    return {"ok": True, "sources": sources.model_dump()}
+
+
+@router.delete("/tracker-sources/website-scrapes/{scrape_id}", tags=["trackers"])
+async def delete_website_scrape(scrape_id: str):
+    sources = sources_module.remove_website_scrape(scrape_id)
+    return {"ok": True, "sources": sources.model_dump()}
+
+
+@router.post("/tracker-sources/manual", tags=["trackers"])
+async def set_manual_trackers(request: Request):
+    body = await request.json()
+    trackers = body.get("trackers", [])
+    if not isinstance(trackers, list):
+        return JSONResponse({"ok": False, "error": "trackers must be a list"}, status_code=422)
+    sources = sources_module.set_manual(trackers)
+    return {"ok": True, "sources": sources.model_dump()}
