@@ -105,8 +105,9 @@ $ActiveFile     = Join-Path $ConfigDir "active_raw.txt"
 $SleepFile      = Join-Path $TrackerDataDir "tracker-sleep.json"
 if (-not (Test-Path $TrackerDataDir)) { New-Item -ItemType Directory -Path $TrackerDataDir | Out-Null }
 
-$PingMode = if ($Cfg.pingMode -and $Cfg.pingMode -ne '') { $Cfg.pingMode } else { 'docker-vpn' }
-$ProxyUrl = if ($Cfg.proxyUrl) { $Cfg.proxyUrl } else { '' }
+$PingMode  = if ($Cfg.pingMode  -and $Cfg.pingMode  -ne '') { $Cfg.pingMode  } else { 'docker-vpn' }
+$ProxyUrl  = if ($Cfg.proxyUrl)  { $Cfg.proxyUrl  } else { '' }
+$PingImage = if ($Cfg.pingImage -and $Cfg.pingImage -ne '') { $Cfg.pingImage } else { 'ghcr.io/o51r15/trackarr:latest' }
 
 $TrackerSources = $null
 if (Test-Path $SourcesFile) { try { $TrackerSources = Get-Content $SourcesFile -Raw | ConvertFrom-Json } catch { Write-Log "Could not read tracker-sources.json: $_" "WARN" } }
@@ -243,7 +244,7 @@ $pingResult = 0
 
 switch ($PingMode) {
     'docker-vpn' {
-        docker run --rm --network=$docker_net -v "$($ConfigDir):/data" local-trackerping trackerping -l -o /data/working_trackers.txt /data/active_raw.txt
+        docker run --rm --network=$docker_net -v "$($ConfigDir):/data" $PingImage trackerping -l -o /data/working_trackers.txt /data/active_raw.txt
         $pingResult = $LASTEXITCODE
     }
     'socks5' {
@@ -252,7 +253,7 @@ switch ($PingMode) {
         docker run --rm `
             -e ALL_PROXY=$ProxyUrl -e all_proxy=$ProxyUrl `
             -v "$($ConfigDir):/data" `
-            local-trackerping trackerping -l --no-udp -o /data/working_trackers.txt /data/active_raw.txt
+            $PingImage trackerping -l --no-udp -o /data/working_trackers.txt /data/active_raw.txt
         $pingResult = $LASTEXITCODE
     }
     'https-proxy' {
@@ -262,19 +263,19 @@ switch ($PingMode) {
             -e HTTPS_PROXY=$ProxyUrl -e HTTP_PROXY=$ProxyUrl `
             -e https_proxy=$ProxyUrl -e http_proxy=$ProxyUrl `
             -v "$($ConfigDir):/data" `
-            local-trackerping trackerping -l --no-udp -o /data/working_trackers.txt /data/active_raw.txt
+            $PingImage trackerping -l --no-udp -o /data/working_trackers.txt /data/active_raw.txt
         $pingResult = $LASTEXITCODE
     }
     'direct' {
         Write-Log "Pinging directly (no VPN or proxy)." "INFO"
         docker run --rm `
             -v "$($ConfigDir):/data" `
-            local-trackerping trackerping -l -o /data/working_trackers.txt /data/active_raw.txt
+            $PingImage trackerping -l -o /data/working_trackers.txt /data/active_raw.txt
         $pingResult = $LASTEXITCODE
     }
     default {
         Write-Log "Unknown pingMode '$PingMode' - falling back to docker-vpn." "WARN"
-        docker run --rm --network=$docker_net -v "$($ConfigDir):/data" local-trackerping trackerping -l -o /data/working_trackers.txt /data/active_raw.txt
+        docker run --rm --network=$docker_net -v "$($ConfigDir):/data" $PingImage trackerping -l -o /data/working_trackers.txt /data/active_raw.txt
         $pingResult = $LASTEXITCODE
     }
 }

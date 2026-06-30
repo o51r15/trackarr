@@ -1,4 +1,4 @@
-name: Build & Push Docker Images
+name: Build & Push Docker Image
 
 on:
   push:
@@ -25,9 +25,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Bridge image — the HTTP bridge + GUI server
-      - name: Extract metadata (bridge)
-        id: meta-bridge
+      - name: Extract metadata
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
@@ -35,32 +34,12 @@ jobs:
             type=sha,prefix=,format=short
             type=raw,value=latest
 
-      - name: Build and push bridge image
+      - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ${{ steps.meta-bridge.outputs.tags }}
-          labels: ${{ steps.meta-bridge.outputs.labels }}
-          cache-from: type=gha,scope=bridge
-          cache-to: type=gha,mode=max,scope=bridge
-
-      # Ping image — the local-trackerping binary (ephemeral, created and destroyed each run)
-      - name: Extract metadata (ping)
-        id: meta-ping
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}-ping
-          tags: |
-            type=sha,prefix=,format=short
-            type=raw,value=latest
-
-      - name: Build and push ping image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./ping
-          push: true
-          tags: ${{ steps.meta-ping.outputs.tags }}
-          labels: ${{ steps.meta-ping.outputs.labels }}
-          cache-from: type=gha,scope=ping
-          cache-to: type=gha,mode=max,scope=ping
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

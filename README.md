@@ -17,72 +17,57 @@ Supports VPN Docker networks, SOCKS5 proxies, HTTPS proxies, or direct connectio
 
 ## Installation
 
-### Option 1 — Windows (run directly on host)
+### Option 1 — Docker (recommended)
 
-**Requirements**
-- PowerShell 5.1+
-- Docker Desktop
-- qBittorrent with Web API enabled
+One image does everything. The bridge runs as a persistent container; when a ping
+cycle runs, it spins up a second ephemeral instance of the same image to do the
+pinging, then destroys it.
 
-**Steps**
+```
+docker pull ghcr.io/o51r15/trackarr:latest
+```
+
+Create your config:
+```
+curl -o homelab-config.json https://raw.githubusercontent.com/o51r15/trackarr/master/homelab-config.example.json
+```
+
+Edit `homelab-config.json`, then run:
+```
+docker run -d \
+  --name trackarr \
+  -p 7374:7374 \
+  -v ./homelab-config.json:/app/homelab-config.json \
+  -v ./tracker-data:/app/tracker-data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  ghcr.io/o51r15/trackarr:latest
+```
+
+Open http://localhost:7374.
+
+> The Docker socket mount is required so the bridge can spin up ephemeral ping containers.
+
+---
+
+### Option 2 — Windows (run directly on host)
+
+**Requirements:** PowerShell 5.1+, Docker Desktop, qBittorrent with Web API enabled.
 
 1. Clone the repo
-2. Build the ping image from source:
-   ```
-   docker build -t local-trackerping ./ping
-   ```
-3. Copy `homelab-config.example.json` to `homelab-config.json` and fill in your settings
-4. Encrypt your qBittorrent password:
+2. Copy `homelab-config.example.json` to `homelab-config.json` and fill in your settings
+3. Encrypt your qBittorrent password:
    ```powershell
    ConvertFrom-SecureString (ConvertTo-SecureString "your_password" -AsPlainText -Force)
    ```
    Paste the output as `tp.pass` in `homelab-config.json`
-5. Set `tp.dir` to the full path of the repo directory
-6. Set `tp.script` to the full path of `trackerping.ps1`
+4. Set `tp.dir` to the full path of the repo directory
+5. Set `tp.script` to the full path of `trackerping.ps1`
+6. Set `tp.pingImage` to `ghcr.io/o51r15/trackarr:latest` (or omit — that is the default)
 7. Run the bridge:
    ```powershell
    powershell -ExecutionPolicy Bypass -File trackarr-bridge.ps1
    ```
 8. Open http://localhost:7374
-
----
-
-### Option 2 — Docker (pre-built images from CI)
-
-Both images are published to GitHub Container Registry on every push to master.
-No local builds required.
-
-**Requirements**
-- Docker
-- qBittorrent with Web API enabled
-
-**Steps**
-
-1. Pull both images:
-   ```
-   docker pull ghcr.io/o51r15/trackarr:latest
-   docker pull ghcr.io/o51r15/trackarr-ping:latest
-   docker tag ghcr.io/o51r15/trackarr-ping:latest local-trackerping
-   ```
-2. Create your config:
-   ```
-   curl -o homelab-config.json https://raw.githubusercontent.com/o51r15/trackarr/master/homelab-config.example.json
-   ```
-   Edit `homelab-config.json` with your qBittorrent URL, credentials, and ping mode settings.
-3. Run the bridge:
-   ```
-   docker run -d \
-     --name trackarr \
-     -p 7374:7374 \
-     -v ./homelab-config.json:/app/homelab-config.json \
-     -v ./tracker-data:/app/tracker-data \
-     -v /var/run/docker.sock:/var/run/docker.sock \
-     ghcr.io/o51r15/trackarr:latest
-   ```
-4. Open http://localhost:7374
-
-> **Note:** The Docker socket mount (`/var/run/docker.sock`) is required so the bridge
-> can call `docker run local-trackerping` for each ping run.
 
 ---
 
@@ -97,20 +82,7 @@ Configured in the GUI under **Config → Ping Mode**, or as `tp.pingMode` in `ho
 | `https-proxy` | Ping container uses an HTTP CONNECT proxy via `HTTPS_PROXY`. | **Skipped** — HTTP proxy cannot tunnel UDP |
 | `direct` | No VPN or proxy. Pings go out on the host network. | Supported |
 
-Set `tp.proxyUrl` for SOCKS5/HTTPS proxy modes, e.g. `socks5://192.168.1.x:1080` or `http://192.168.1.x:3128`.
-
----
-
-## The ping image
-
-`local-trackerping` is built from `./ping` in this repo — it is not an external dependency.
-It is a small Alpine + Python image that handles UDP announce, HTTP/HTTPS, and WebSocket trackers.
-It is created and destroyed on every TrackerPing run. It is never a running service.
-
-- **Windows install:** `docker build -t local-trackerping ./ping`
-- **Docker install:** `docker pull ghcr.io/o51r15/trackarr-ping:latest && docker tag ghcr.io/o51r15/trackarr-ping:latest local-trackerping`
-
-Rebuild after any changes to `./ping`.
+Set `tp.proxyUrl` for proxy modes, e.g. `socks5://192.168.1.x:1080` or `http://192.168.1.x:3128`.
 
 ---
 
@@ -119,13 +91,13 @@ Rebuild after any changes to `./ping`.
 ```
 trackarr/
 ├── ping/
-│   ├── Dockerfile           Builds the local-trackerping image (source is here)
 │   ├── trackerping.py       Async ping binary — UDP, HTTP/HTTPS, WebSocket
-│   └── requirements.txt
+│   └── requirements.txt     Python deps (bundled into the main Docker image)
 ├── trackerping.ps1          Core script — collect, ping, inject
 ├── tracker-discovery.ps1    Finds new tracker list sources
 ├── trackarr-bridge.ps1      HTTP bridge (serves GUI + API on port 7374)
 ├── trackarr-gui.html        Single-file web GUI
+├── Dockerfile               Builds the single trackarr image (bridge + ping binary)
 ├── tracker_urls.txt         Raw .txt list URLs (one per line)
 ├── homelab-config.json      Your config (gitignored)
 ├── homelab-config.example.json  Config template
