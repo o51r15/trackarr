@@ -202,6 +202,7 @@
             <div class="panel-body">
                 <div id="connModeVpnBanner" style="display:none;padding:14px 16px;background:rgba(0,230,118,.06);border:1px solid rgba(0,230,118,.2);border-radius:6px;font-size:13px;color:var(--success);margin-bottom:14px">
                     <strong>VPN Detected.</strong> This container is attached to a VPN-routed Docker network. Pings exit through the VPN automatically. Proxy and direct options are unavailable while a VPN network is detected.
+                    <div style="margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--text)">External IP: <span id="vpnExternalIp">-</span></div>
                 </div>
                 <div id="connModeOpenFields" style="display:none">
                     <div class="form-grid">
@@ -523,6 +524,8 @@
     function renderConnMode() {
         document.getElementById('connModeVpnBanner').style.display  = netInfo.vpn_detected ? '' : 'none';
         document.getElementById('connModeOpenFields').style.display = netInfo.vpn_detected ? 'none' : '';
+        const ipEl = document.getElementById('vpnExternalIp');
+        if (ipEl) ipEl.textContent = netInfo.external_ip || 'unknown';
     }
 
     function onConnModeChange() {
