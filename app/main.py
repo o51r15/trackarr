@@ -4,8 +4,9 @@ main.py — FastAPI application entry point
 Startup sequence:
   1. Run VPN detection (network.detect())
   2. Load app config from /app/data/config.json
-  3. Mount API router
-  4. Serve static GUI
+  3. Start the internal scheduler
+  4. Mount API router
+  5. Serve static GUI
 
 Connection mode is set once at startup and never changes.
 """
@@ -21,7 +22,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import load_app_config, env
+from .core.scheduler import Scheduler
 from .network import detect
+from .api.jobs import trigger_scheduled_run
 from .api.router import router
 
 logging.basicConfig(
@@ -36,7 +39,7 @@ STATIC_DIR = Path(__file__).parent.parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── Startup ──────────────────────────────────────────────────────────────
+    # -- Startup --------------------------------------------------------------
     logger.info("Trackarr v2 starting up...")
 
     network_info = await detect()
@@ -46,11 +49,16 @@ async def lifespan(app: FastAPI):
     app.state.config   = load_app_config()
     app.state.settings = env
 
+    scheduler = Scheduler(trigger_fn=lambda: trigger_scheduled_run(app.state))
+    scheduler.start()
+    app.state.scheduler = scheduler
+
     logger.info("Ready. mode=%s  external_ip=%s", network_info["mode"], network_info["external_ip"])
 
     yield
 
-    # ── Shutdown ─────────────────────────────────────────────────────────────
+    # -- Shutdown ---------------------------------------------------------------
+    scheduler.stop()
     logger.info("Trackarr shutting down.")
 
 

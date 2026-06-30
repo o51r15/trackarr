@@ -140,6 +140,19 @@ async def start_trackerping(request: Request):
     return {"ok": True, "job_id": job.id}
 
 
+async def trigger_scheduled_run(app_state) -> bool:
+    """
+    Used by the scheduler. Runs a trackerping job to completion (awaited, not
+    fire-and-forget) so the scheduler can record a real success/failure result.
+    The run is still visible in the job list/SSE stream like any other run.
+    """
+    prune_jobs()
+    job = create_job("trackerping")
+    job.task = asyncio.current_task()
+    await _execute_trackerping(job, app_state)
+    return job.status == JobStatus.DONE
+
+
 @router.get("/{job_id}")
 async def get_job_status(job_id: str):
     job = get_job(job_id)

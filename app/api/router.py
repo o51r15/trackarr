@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from ..config import AppConfig, load_app_config, save_app_config, env
 from ..core import history as history_module
+from ..core import scheduler as scheduler_module
 from ..core import sleep as sleep_module
 from ..core import sources as sources_module
 from . import jobs as job_router
@@ -180,3 +181,59 @@ async def set_manual_trackers(request: Request):
         return JSONResponse({"ok": False, "error": "trackers must be a list"}, status_code=422)
     sources = sources_module.set_manual(trackers)
     return {"ok": True, "sources": sources.model_dump()}
+
+
+# ---------------------------------------------------------------------------
+# Scheduler
+# ---------------------------------------------------------------------------
+
+@router.get("/schedules", tags=["scheduler"])
+async def list_schedules():
+    return [s.model_dump() for s in scheduler_module.load_schedules()]
+
+
+@router.post("/schedules", tags=["scheduler"])
+async def create_schedule(request: Request):
+    body = await request.json()
+    try:
+        new_schedule = scheduler_module.Schedule.model_validate(body)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+
+    schedules = scheduler_module.load_schedules()
+    schedules.append(new_schedule)
+    schedules = scheduler_module.recalculate_next_runs(schedules)
+    scheduler_module.save_schedules(schedules)
+    return {"ok": True, "schedule": new_schedule.model_dump()}
+
+
+@router.put("/schedules/{schedule_id}", tags=["scheduler"])
+async def update_schedule(schedule_id: str, request: Request):
+    body = await request.json()
+    schedules = scheduler_module.load_schedules()
+    idx = next((i for i, s in enumerate(schedules) if s.id == schedule_id), None)
+    if idx is None:
+        return JSONResponse({"ok": False, "error": "schedule not found"}, status_code=404)
+
+    body["id"] = schedule_id   # id is immutable
+    try:
+        updated = scheduler_module.Schedule.model_validate(body)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+
+    # Force next_run to be recalculated since frequency/time may have changed
+    updated.next_run = None
+    schedules[idx] = updated
+    schedules = scheduler_module.recalculate_next_runs(schedules)
+    scheduler_module.save_schedules(schedules)
+    return {"ok": True, "schedule": schedules[idx].model_dump()}
+
+
+@router.delete("/schedules/{schedule_id}", tags=["scheduler"])
+async def delete_schedule(schedule_id: str):
+    schedules = scheduler_module.load_schedules()
+    remaining = [s for s in schedules if s.id != schedule_id]
+    if len(remaining) == len(schedules):
+        return JSONResponse({"ok": False, "error": "schedule not found"}, status_code=404)
+    scheduler_module.save_schedules(remaining)
+    return {"ok": True}

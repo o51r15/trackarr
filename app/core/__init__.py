@@ -5,6 +5,8 @@
 # inject.py    — qBittorrent API client
 # sleep.py     — sleep/hibernate state with progressive backoff
 # history.py   — 7-day tracker run history
+# sources.py   — tracker source CRUD (GitHub repos, website scrapes, manual)
+# scheduler.py — internal async scheduler (daily/weekly/hourly/interval)
 # run.py       — full pipeline orchestration (collect -> ping -> latency -> sleep -> inject)
 #
 # Phase 5+:
