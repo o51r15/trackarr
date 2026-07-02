@@ -24,11 +24,12 @@ import json
 import sys
 from pathlib import Path
 
-from .core.ping import ping_all
-from .core.latency import measure_all
-
 
 async def run(input_path: str, output_path: str) -> None:
+    # Import here after the module is fully initialized as part of the package
+    from app.core.ping import ping_all
+    from app.core.latency import measure_all
+
     urls = [
         ln.strip() for ln in Path(input_path).read_text(encoding="utf-8").splitlines()
         if ln.strip()
