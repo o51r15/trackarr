@@ -28,11 +28,6 @@ LogFn = Callable[[str, str], Awaitable[None]]
 
 
 def _save_known_trackers_cache(trackers: set[str]) -> None:
-    """
-    Persists the most recent full tracker pool so the discovery preview
-    endpoint can diff a candidate source against "what we already have"
-    without needing to re-run the full collection pipeline.
-    """
     try:
         KNOWN_TRACKERS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         KNOWN_TRACKERS_CACHE_FILE.write_text(
@@ -58,25 +53,57 @@ class RunSummary:
     passed: int = 0
     success: bool = False
     error: str | None = None
-    results: list[dict] = field(default_factory=list)   # [{url, status, latency_ms}, ...]
+    results: list[dict] = field(default_factory=list)
 
 
 async def run_trackerping(
     config: AppConfig,
     env: Env,
-    connection_mode: str,      # "vpn" | "direct" | "proxy" — resolved from network detection + config
+    connection_mode: str,
     log: LogFn,
+    network_info: dict | None = None,
 ) -> RunSummary:
     summary = RunSummary()
+    network_info = network_info or {}
 
     if not env.qbt_url or not env.qbt_user:
         summary.error = "qBittorrent credentials not configured (QBT_URL / QBT_USER / QBT_PASS env vars)."
         await log(summary.error, "error")
         return summary
 
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 0. VPN safety check
+    # ------------------------------------------------------------------
+    vpn_container = env.vpn_container
+    if vpn_container:
+        host_ip = network_info.get("host_ip")
+        vpn_ip  = network_info.get("vpn_ip")
+        ips_match = network_info.get("ips_match")
+
+        if vpn_ip is None:
+            summary.error = (
+                f"VPN container '{vpn_container}' is not reachable — "
+                f"cannot confirm VPN routing is active. Aborting."
+            )
+            await log(summary.error, "error")
+            return summary
+
+        if ips_match:
+            summary.error = (
+                f"CRITICAL: VPN is NOT protecting traffic. "
+                f"Host IP ({host_ip}) matches VPN container IP ({vpn_ip}). Aborting."
+            )
+            await log(summary.error, "error")
+            return summary
+
+        await log(
+            f"VPN verified. Unprotected IP: {host_ip} | Protected IP: {vpn_ip}",
+            "ok",
+        )
+
+    # ------------------------------------------------------------------
     # 1. Collect
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     sources = sources_module.load_sources()
     github_repos = [
         collect.GithubRepoSource(id=r.id, url=r.url, label=r.label)
@@ -108,13 +135,11 @@ async def run_trackerping(
 
     _save_known_trackers_cache(collection.trackers)
 
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # 1.5 Sleep/hibernate filtering
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     sleep_state = sleep.load_sleep_state()
-    sleep_state = {
-        k: v for k, v in sleep_state.items() if k in collection.trackers
-    }  # prune unknowns
+    sleep_state = {k: v for k, v in sleep_state.items() if k in collection.trackers}
 
     dormant = sleep.get_dormant_set(sleep_state)
     active_trackers = collection.trackers - dormant
@@ -133,13 +158,15 @@ async def run_trackerping(
         summary.success = True
         return summary
 
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # 2. Ping
-    # ---------------------------------------------------------------------
-    no_udp = connection_mode == "proxy"
+    # ------------------------------------------------------------------
+    no_udp   = connection_mode == "proxy"
     proxy_url = config.proxy_url if connection_mode == "proxy" else None
 
-    if connection_mode == "proxy" and proxy_url:
+    if vpn_container:
+        await log(f"Pinging via container '{vpn_container}' (VPN-routed network).", "info")
+    elif connection_mode == "proxy" and proxy_url:
         await log(f"Using proxy: {proxy_url}", "info")
         await log("NOTE: UDP trackers are skipped - proxies cannot tunnel UDP traffic.", "warn")
     elif connection_mode == "vpn":
@@ -153,11 +180,12 @@ async def run_trackerping(
         no_udp=no_udp,
         timeout=10.0,
         proxy_url=proxy_url,
+        vpn_container=vpn_container or None,
     )
 
-    passed = {r.url for r in ping_results if r.up is True}
+    passed  = {r.url for r in ping_results if r.up is True}
     skipped = {r.url for r in ping_results if r.up is None}
-    tested = active_trackers - skipped   # only count tested ones for sleep state
+    tested  = active_trackers - skipped
 
     summary.passed = len(passed)
     await log(
@@ -170,25 +198,24 @@ async def run_trackerping(
         await log(summary.error, "error")
         return summary
 
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # 3.5 Latency measurement
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     await log(f"Measuring latency (timeout: {config.latency_timeout_ms}ms)...", "info")
     latency_map = await latency.measure_all(list(passed), config.latency_timeout_ms)
     await log(f"Latency complete for {len(passed)} trackers.", "ok")
 
     for t in active_trackers:
         if t in passed:
-            lat = latency_map.get(t)
-            summary.results.append({"url": t, "status": "UP", "latency_ms": lat})
+            summary.results.append({"url": t, "status": "UP",   "latency_ms": latency_map.get(t)})
         elif t not in skipped:
             summary.results.append({"url": t, "status": "DOWN", "latency_ms": None})
 
     history.record_run(summary.results, collection.trackers, config.history_days)
 
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # 3.7 Update sleep state
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     sleep_state = sleep.update_after_run(sleep_state, tested, passed)
     sleep.save_sleep_state(sleep_state)
     new_counts = sleep.counts(sleep_state)
@@ -198,9 +225,9 @@ async def run_trackerping(
         "info",
     )
 
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # 4-6. qBittorrent inject + verify
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
     try:
         await inject.run_inject_pipeline(
             qbt_url=env.qbt_url,

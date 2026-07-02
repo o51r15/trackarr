@@ -201,8 +201,14 @@
             <div class="panel-header"><div class="panel-title">Connection Mode</div></div>
             <div class="panel-body">
                 <div id="connModeVpnBanner" style="display:none;padding:14px 16px;background:rgba(0,230,118,.06);border:1px solid rgba(0,230,118,.2);border-radius:6px;font-size:13px;color:var(--success);margin-bottom:14px">
-                    <strong>VPN Detected.</strong> This container is attached to a VPN-routed Docker network. Pings exit through the VPN automatically. Proxy and direct options are unavailable while a VPN network is detected.
-                    <div style="margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--text)">External IP: <span id="vpnExternalIp">-</span></div>
+                    <strong>VPN Container Active.</strong> Pings are routed through the configured VPN container. qBittorrent is reached directly on your local network.
+                    <div style="margin-top:10px;display:flex;gap:24px;flex-wrap:wrap">
+                        <div><div style="font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)">Unprotected IP</div><div id="hostIpDisplay" style="font-family:var(--mono);font-size:13px;color:var(--text)">-</div></div>
+                        <div><div style="font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)">Protected IP (VPN)</div><div id="vpnIpDisplay" style="font-family:var(--mono);font-size:13px;color:var(--accent)">-</div></div>
+                    </div>
+                    <div id="vpnMatchWarning" style="display:none;margin-top:10px;padding:8px 12px;background:rgba(255,61,87,.08);border:1px solid rgba(255,61,87,.3);border-radius:4px;font-size:12px;color:var(--danger)">
+                        WARNING: Both IPs match — VPN is not protecting traffic. Runs will be aborted until this is resolved.
+                    </div>
                 </div>
                 <div id="connModeOpenFields" style="display:none">
                     <div class="form-grid">
@@ -524,8 +530,14 @@
     function renderConnMode() {
         document.getElementById('connModeVpnBanner').style.display  = netInfo.vpn_detected ? '' : 'none';
         document.getElementById('connModeOpenFields').style.display = netInfo.vpn_detected ? 'none' : '';
-        const ipEl = document.getElementById('vpnExternalIp');
-        if (ipEl) ipEl.textContent = netInfo.external_ip || 'unknown';
+        if (netInfo.vpn_detected) {
+            const hostEl = document.getElementById('hostIpDisplay');
+            const vpnEl  = document.getElementById('vpnIpDisplay');
+            const warnEl = document.getElementById('vpnMatchWarning');
+            if (hostEl) hostEl.textContent = netInfo.host_ip || 'unknown';
+            if (vpnEl)  vpnEl.textContent  = netInfo.vpn_ip  || 'unknown';
+            if (warnEl) warnEl.style.display = netInfo.ips_match ? '' : 'none';
+        }
     }
 
     function onConnModeChange() {

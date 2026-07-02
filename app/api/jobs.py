@@ -120,7 +120,7 @@ async def _execute_trackerping(job: Job, app_state) -> None:
 
         connection_mode = network_info["mode"] if network_info["vpn_detected"] else config.connection_mode
 
-        summary = await run_trackerping(config, env, connection_mode, log)
+        summary = await run_trackerping(config, env, connection_mode, log, network_info)
         job.summary = {
             "fetched": summary.fetched,
             "active":  summary.active,

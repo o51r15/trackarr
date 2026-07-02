@@ -1,136 +1,122 @@
 """
-network.py — VPN auto-detection
+network.py — Connection mode detection and VPN IP verification
 
-Runs once at container startup. Detects whether a VPN tunnel interface
-(tun*/wg*/tap*) is present in this container's network namespace.
+Runs once at container startup. Two modes:
 
-This is the correct signal — NOT the default gateway IP. An earlier version
-of this module tried to infer VPN presence from the gateway address (treating
-anything other than 172.17.0.1 as "must be a custom VPN network"), which is
-wrong: docker-compose always creates its own per-project bridge network with
-a non-172.17.0.1 gateway regardless of whether a VPN is involved at all. That
-produced false positives for completely ordinary `docker compose up` deployments
-with no VPN anywhere in the picture.
+VPN_CONTAINER is set (e.g. VPN_CONTAINER=gluetun):
+  Pings will be routed through a temporary container sharing that container's
+  network namespace. At startup we fetch both the host (Trackarr's own) IP
+  and the VPN container's IP and store them. The run pipeline checks them
+  before pinging and aborts if they match (VPN not protecting traffic).
 
-A real VPN container (Gluetun, OpenVPN, WireGuard) creates an actual tunnel
-network interface — tun0, wg0, etc. — in the network namespace it shares with
-Trackarr via `network_mode: service:<vpn-container>`. Checking for that
-interface's existence is the only reliable signal, independent of whatever
-subnet Docker happens to assign.
+VPN_CONTAINER is not set:
+  Pings run in-process, direct or via SOCKS5/HTTP proxy per config.
 
-Result is stored in app.state and exposed via GET /api/network-mode.
-It is set once at startup and never changes for the lifetime of the container.
-If VPN is detected, the GUI hides proxy/direct options entirely.
-If VPN is not detected, the GUI shows proxy/direct options and hides VPN references.
+This replaces the previous /sys/class/net tun/wg/tap interface detection,
+which was unreliable because docker-compose bridge networks produce the same
+interface patterns as real VPN networks on some hosts.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import socket
-import struct
-from pathlib import Path
-from typing import Literal
+import subprocess
 
 import aiohttp
 
 logger = logging.getLogger(__name__)
 
-ConnectionMode = Literal["vpn", "direct", "proxy"]
 
-NET_CLASS_DIR = Path("/sys/class/net")
-# Interface name prefixes created by VPN tunnel software.
-# tun/tap: OpenVPN and generic TUN/TAP devices. wg: WireGuard (including Gluetun's wireguard mode).
-VPN_INTERFACE_PREFIXES = ("tun", "tap", "wg")
-
-
-def _read_default_gateway() -> str | None:
-    """
-    Parse /proc/net/route for the default route (destination 0.0.0.0).
-    Returns the gateway IP string, or None if unreadable.
-    Informational only — no longer used to determine VPN status.
-    """
-    try:
-        with open("/proc/net/route", encoding="ascii") as f:
-            for line in f.readlines()[1:]:          # skip header
-                fields = line.strip().split()
-                if len(fields) < 3:
-                    continue
-                destination = fields[1]
-                gateway_hex = fields[2]
-                if destination == "00000000":        # 0.0.0.0 = default route
-                    gw_bytes = struct.pack("<L", int(gateway_hex, 16))
-                    return socket.inet_ntoa(gw_bytes)
-    except Exception as exc:
-        logger.debug("Could not read /proc/net/route: %s", exc)
-    return None
-
-
-def _detect_vpn_interface() -> str | None:
-    """
-    Returns the name of the first VPN tunnel interface found in this
-    network namespace (e.g. "tun0", "wg0"), or None if none exist.
-    """
-    try:
-        if not NET_CLASS_DIR.is_dir():
-            return None
-        for entry in sorted(NET_CLASS_DIR.iterdir()):
-            name = entry.name
-            if name.startswith(VPN_INTERFACE_PREFIXES):
-                return name
-    except Exception as exc:
-        logger.debug("Could not enumerate /sys/class/net: %s", exc)
-    return None
-
-
-async def _fetch_external_ip() -> str | None:
+async def _fetch_ip(url: str = "https://api.ipify.org", timeout: float = 10.0) -> str | None:
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://api.ipify.org",
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
                 return (await resp.text()).strip()
     except Exception as exc:
-        logger.warning("Could not fetch external IP: %s", exc)
+        logger.warning("Could not fetch external IP from %s: %s", url, exc)
         return None
 
 
-async def detect() -> dict:
+def _fetch_ip_via_container(vpn_container: str) -> str | None:
     """
-    Run VPN detection. Returns a dict suitable for the /api/network-mode response.
-
-    Fields:
-        mode           "vpn" | "direct" | "proxy"  — resolved mode
-        vpn_detected   bool                          — True if a VPN tunnel interface was found
-        vpn_interface  str | None                    — the interface name, if found (e.g. "tun0")
-        gateway        str | None                    — default gateway IP (informational only)
-        external_ip    str | None                    — container's external IP
+    Spawns a minimal alpine container on the VPN container's network namespace
+    and fetches the external IP through it. This is exactly the same pattern
+    as the original PS implementation. Returns None on failure.
     """
-    gateway = _read_default_gateway()
-    vpn_interface = _detect_vpn_interface()
-    external_ip = await _fetch_external_ip()
+    try:
+        result = subprocess.run(
+            [
+                "docker", "run", "--rm",
+                f"--network=container:{vpn_container}",
+                "alpine",
+                "wget", "--timeout=10", "-qO-", "https://api.ipify.org",
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        ip = result.stdout.strip()
+        return ip if ip else None
+    except Exception as exc:
+        logger.warning("Could not fetch VPN container IP via docker run: %s", exc)
+        return None
 
-    vpn_detected = vpn_interface is not None
-    mode: ConnectionMode = "vpn" if vpn_detected else "direct"
 
-    result = {
-        "mode":          mode,
-        "vpn_detected":  vpn_detected,
-        "vpn_interface": vpn_interface,
-        "gateway":       gateway,
-        "external_ip":   external_ip,
-    }
+async def detect(vpn_container: str = "") -> dict:
+    """
+    Detect connection mode and fetch IPs for display and verification.
 
-    if vpn_detected:
+    Returns:
+        mode            "vpn" | "direct" | "proxy"
+        vpn_detected    bool
+        vpn_container   str — the configured container name, or ""
+        host_ip         str | None — Trackarr's own external IP
+        vpn_ip          str | None — IP seen through the VPN container, if configured
+        external_ip     str | None — alias for host_ip, for GUI compatibility
+        ips_match       bool | None — True if host_ip == vpn_ip (VPN not working)
+    """
+    host_ip = await _fetch_ip()
+
+    if not vpn_container:
         logger.info(
-            "VPN tunnel interface detected (%s) — external_ip=%s — proxy/direct options disabled.",
-            vpn_interface, external_ip,
+            "No VPN_CONTAINER configured — direct/proxy mode. external_ip=%s", host_ip
+        )
+        return {
+            "mode":          "direct",
+            "vpn_detected":  False,
+            "vpn_container": "",
+            "host_ip":       host_ip,
+            "vpn_ip":        None,
+            "external_ip":   host_ip,
+            "ips_match":     None,
+        }
+
+    logger.info("VPN_CONTAINER=%s — fetching VPN IP via ephemeral container...", vpn_container)
+    vpn_ip = await asyncio.get_event_loop().run_in_executor(
+        None, _fetch_ip_via_container, vpn_container
+    )
+
+    ips_match = (host_ip == vpn_ip) if (host_ip and vpn_ip) else None
+
+    if vpn_ip is None:
+        logger.warning(
+            "Could not reach VPN container '%s'. Is it running?", vpn_container
+        )
+    elif ips_match:
+        logger.warning(
+            "CRITICAL: VPN IP (%s) matches host IP (%s) — VPN is NOT protecting traffic.",
+            vpn_ip, host_ip,
         )
     else:
         logger.info(
-            "No VPN tunnel interface found — gateway=%s external_ip=%s — proxy/direct options available.",
-            gateway, external_ip,
+            "VPN verified. Host IP: %s | VPN IP: %s", host_ip, vpn_ip
         )
 
-    return result
+    return {
+        "mode":          "vpn",
+        "vpn_detected":  True,
+        "vpn_container": vpn_container,
+        "host_ip":       host_ip,
+        "vpn_ip":        vpn_ip,
+        "external_ip":   vpn_ip or host_ip,
+        "ips_match":     ips_match,
+    }

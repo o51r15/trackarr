@@ -1,31 +1,33 @@
 """
 ping.py — Async tracker connectivity checker
 
-Tests trackers via:
-  - UDP: raw BitTorrent UDP tracker protocol "connect" handshake
-  - HTTP/HTTPS: announce request, any non-5xx response counts as reachable
-  - WS/WSS: mapped to HTTP/HTTPS equivalent (most WS trackers accept plain HTTP announce)
+Two modes:
 
-When no_udp=True (proxy modes), UDP trackers are skipped entirely rather than
-tested — SOCKS5 and HTTP CONNECT proxies cannot tunnel UDP traffic.
+IN-PROCESS (vpn_container is None):
+  Pings run directly inside Trackarr using asyncio. Supports UDP BitTorrent
+  protocol, HTTP/HTTPS announce, and WS/WSS. Proxy support via aiohttp-socks
+  (SOCKS5) or aiohttp's native HTTP proxy kwarg.
 
-Proxy support:
-  - HTTP/HTTPS proxy URLs (http://host:port) use aiohttp's native per-request
-    `proxy=` kwarg.
-  - SOCKS5 proxy URLs (socks5://host:port) use aiohttp-socks's ProxyConnector
-    as the session's connector — aiohttp has no native SOCKS5 support.
-
-Runs in-process. No subprocess, no Docker, no file-based handoff.
+CONTAINER (vpn_container is set):
+  Pings are delegated to an ephemeral Docker container sharing the VPN
+  container's network namespace. Trackarr writes tracker URLs to a temp
+  input file, spawns the container (using the same image), waits for it
+  to complete, reads the JSON output file, cleans up. All traffic exits
+  through the VPN tunnel automatically, no proxy configuration needed.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
+import secrets
 import socket
 import struct
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 
 import aiohttp
@@ -34,6 +36,9 @@ logger = logging.getLogger(__name__)
 
 CONNECT_MAGIC = 0x41727101980
 MAX_CONCURRENCY = 150
+DATA_DIR = Path("/app/data")
+IMAGE_NAME = "ghcr.io/o51r15/trackarr:latest"
+
 ANNOUNCE_PARAMS = {
     "info_hash": "%00" * 20,
     "peer_id": "-TR3000-000000000000",
@@ -49,7 +54,12 @@ ANNOUNCE_PARAMS = {
 class PingResult:
     url: str
     up: bool | None     # None = skipped (UDP under proxy mode)
+    latency_ms: int | None = None
 
+
+# ---------------------------------------------------------------------------
+# In-process UDP ping
+# ---------------------------------------------------------------------------
 
 class _UDPPingProtocol(asyncio.DatagramProtocol):
     def __init__(self, packet: bytes, tid: int):
@@ -84,7 +94,6 @@ async def _ping_udp(url: str, timeout: float) -> bool:
     port = p.port or 80
     tid = random.randint(0, 0xFFFFFFFF)
     pkt = struct.pack(">QII", CONNECT_MAGIC, 0, tid)
-
     try:
         loop = asyncio.get_event_loop()
         infos = await loop.run_in_executor(
@@ -107,7 +116,6 @@ async def _ping_udp(url: str, timeout: float) -> bool:
 
 
 def _announce_url(url: str) -> str:
-    """Maps ws/wss to http/https and ensures the URL ends with /announce."""
     target = url
     scheme = urlparse(url).scheme.lower()
     if scheme in ("ws", "wss"):
@@ -124,11 +132,6 @@ async def _ping_http(
     timeout: float,
     http_proxy: str | None = None,
 ) -> bool:
-    """
-    http_proxy: an http:// proxy URL applied per-request via aiohttp's native
-    proxy kwarg. None for direct connections or when the session's connector
-    already routes everything through a SOCKS5 proxy.
-    """
     base = _announce_url(url)
     try:
         async with session.get(
@@ -158,42 +161,25 @@ async def _ping_one(
             return PingResult(url, await _ping_http(session, url, timeout, http_proxy))
         elif scheme == "udp":
             if no_udp:
-                return PingResult(url, None)   # proxy modes can't tunnel UDP
+                return PingResult(url, None)
             return PingResult(url, await _ping_udp(url, timeout))
         else:
             return PingResult(url, False)
 
 
 def _build_connector(proxy_url: str | None) -> aiohttp.BaseConnector:
-    """
-    Returns a SOCKS5 ProxyConnector if proxy_url is a socks5:// URL, otherwise
-    a plain TCPConnector (used directly, or with aiohttp's per-request `proxy=`
-    kwarg for HTTP proxies).
-    """
     if proxy_url and proxy_url.startswith("socks5"):
         from aiohttp_socks import ProxyConnector
         return ProxyConnector.from_url(proxy_url, limit=MAX_CONCURRENCY, ssl=False)
     return aiohttp.TCPConnector(ssl=False, limit=MAX_CONCURRENCY)
 
 
-async def ping_all(
+async def _ping_all_inprocess(
     urls: list[str],
     no_udp: bool = False,
     timeout: float = 10.0,
     proxy_url: str | None = None,
 ) -> list[PingResult]:
-    """
-    Pings every tracker URL concurrently (capped at MAX_CONCURRENCY).
-
-    proxy_url:
-      - "socks5://host:port" — routed via aiohttp-socks's ProxyConnector for the
-        whole session. UDP trackers are always skipped (no_udp should be True).
-      - "http://host:port"   — routed via aiohttp's native per-request proxy kwarg.
-        UDP trackers are always skipped (no_udp should be True).
-      - None — direct connection, or VPN-routed at the network layer (the
-        container's own traffic already exits through the VPN network in that
-        case, so no proxy_url is needed).
-    """
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
     connector = _build_connector(proxy_url)
     http_proxy = proxy_url if proxy_url and proxy_url.startswith("http") else None
@@ -212,3 +198,81 @@ async def ping_all(
         else:
             clean.append(r)
     return clean
+
+
+# ---------------------------------------------------------------------------
+# Container-based ping (VPN mode)
+# ---------------------------------------------------------------------------
+
+async def _ping_all_via_container(
+    urls: list[str],
+    vpn_container: str,
+) -> list[PingResult]:
+    """
+    Delegates all pinging to an ephemeral container sharing the VPN
+    container's network namespace. Input/output via temp files in /app/data.
+    """
+    job_id = secrets.token_hex(6)
+    input_file  = DATA_DIR / f"ping_{job_id}_input.txt"
+    output_file = DATA_DIR / f"ping_{job_id}_output.json"
+
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        input_file.write_text("\n".join(urls), encoding="utf-8")
+
+        loop = asyncio.get_event_loop()
+        returncode = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                [
+                    "docker", "run", "--rm",
+                    f"--network=container:{vpn_container}",
+                    "-v", "/app/data:/app/data",
+                    IMAGE_NAME,
+                    "python3", "-m", "app.ping_worker",
+                    str(input_file), str(output_file),
+                ],
+                timeout=300,
+            ).returncode,
+        )
+
+        if returncode != 0:
+            logger.error("Ping container exited with code %d", returncode)
+            return [PingResult(url, False) for url in urls]
+
+        if not output_file.exists():
+            logger.error("Ping container produced no output file")
+            return [PingResult(url, False) for url in urls]
+
+        raw = json.loads(output_file.read_text(encoding="utf-8"))
+        return [
+            PingResult(url=r["url"], up=r["up"], latency_ms=r.get("latency_ms"))
+            for r in raw
+        ]
+
+    except Exception as exc:
+        logger.exception("Container ping failed: %s", exc)
+        return [PingResult(url, False) for url in urls]
+    finally:
+        input_file.unlink(missing_ok=True)
+        output_file.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+async def ping_all(
+    urls: list[str],
+    no_udp: bool = False,
+    timeout: float = 10.0,
+    proxy_url: str | None = None,
+    vpn_container: str | None = None,
+) -> list[PingResult]:
+    """
+    Pings every tracker URL. Routes through an ephemeral Docker container
+    on the VPN network if vpn_container is set, otherwise runs in-process.
+    """
+    if vpn_container:
+        return await _ping_all_via_container(urls, vpn_container)
+    return await _ping_all_inprocess(urls, no_udp, timeout, proxy_url)

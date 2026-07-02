@@ -1,49 +1,37 @@
-# Trackarr — VPN-routed mode (example: Gluetun)
+# Trackarr — VPN-routed pings via container (example: Gluetun)
 #
-# Trackarr shares Gluetun's network namespace, so its pings exit through
-# whatever VPN provider Gluetun is configured for. VPN attachment is
-# auto-detected at Trackarr's startup — no connection mode needs to be
-# selected, the GUI locks to VPN mode automatically and hides proxy/direct
-# options.
+# Trackarr itself sits on the NORMAL Docker network so it can reach qBittorrent
+# and your local LAN directly. Pings are routed through an ephemeral container
+# that shares the Gluetun network namespace, so all ping traffic exits through
+# the VPN tunnel. This is the correct architecture for this use case.
 #
-# Trackarr has no exposed port of its own in this mode — reach the GUI
-# through Gluetun's published port mapping (set below).
+# Set VPN_CONTAINER to the name of your running Gluetun container.
+# The Docker socket must be mounted so Trackarr can spawn the ephemeral
+# ping container at runtime.
+#
+# Gluetun's port mapping must include Trackarr's GUI port if Gluetun is in
+# the same stack, OR you expose Trackarr's port directly (as done below)
+# since Trackarr is on the normal network and doesn't share Gluetun's namespace.
 
 services:
-  gluetun:
-    image: qmcgaw/gluetun
-    container_name: gluetun
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    ports:
-      - "7374:7374"   # Trackarr GUI, published through Gluetun
-    environment:
-      - VPN_SERVICE_PROVIDER=your_provider
-      - VPN_TYPE=wireguard
-      # - WIREGUARD_PRIVATE_KEY=
-      # - WIREGUARD_ADDRESSES=
-      # See: https://github.com/qdm12/gluetun/wiki for provider-specific config
-
   trackarr:
     image: ghcr.io/o51r15/trackarr:latest
     container_name: trackarr
     restart: unless-stopped
-    network_mode: "service:gluetun"
-    depends_on:
-      - gluetun
+    ports:
+      - "7374:7374"
     volumes:
       - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - QBT_URL=http://192.168.1.x:8080
       - QBT_USER=admin
       - QBT_PASS=changeme
+      - VPN_CONTAINER=gluetun              # name of your running Gluetun container
       # Optional:
       # - GITHUB_TOKEN=
       # - PUSHOVER_USER=
       # - PUSHOVER_TOKEN=
       # - WEBHOOK_URL=
-      # - OLLAMA_URL=http://192.168.1.x:11434   # enables discovery candidate quality scoring
-      # - OLLAMA_MODEL=gemma4:latest             # required alongside OLLAMA_URL, no default assumed
+      # - OLLAMA_URL=http://192.168.1.x:11434
+      # - OLLAMA_MODEL=gemma4:latest

@@ -1,9 +1,7 @@
 # Trackarr — direct or proxy mode (no VPN container)
 #
-# No VPN network attached. Trackarr auto-detects this and offers proxy/direct
-# mode selection in the GUI Config tab. Set PROXY_URL there (or in
-# /app/data/config.json) if you want to route pings through a SOCKS5/HTTP
-# proxy; leave connection_mode as "direct" otherwise.
+# No VPN network attached. Trackarr pings in-process directly or via
+# SOCKS5/HTTP proxy. Set connection_mode and proxy_url in the GUI Config tab.
 
 services:
   trackarr:
@@ -14,6 +12,7 @@ services:
       - "7374:7374"
     volumes:
       - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - QBT_URL=http://192.168.1.x:8080
       - QBT_USER=admin
@@ -23,5 +22,6 @@ services:
       # - PUSHOVER_USER=
       # - PUSHOVER_TOKEN=
       # - WEBHOOK_URL=
-      # - OLLAMA_URL=http://192.168.1.x:11434   # enables discovery candidate quality scoring
-      # - OLLAMA_MODEL=gemma4:latest             # required alongside OLLAMA_URL, no default assumed
+      # - OLLAMA_URL=http://192.168.1.x:11434
+      # - OLLAMA_MODEL=gemma4:latest
+      # - VPN_CONTAINER=                        # leave empty — no VPN container in this compose

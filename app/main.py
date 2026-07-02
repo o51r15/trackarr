@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
     # -- Startup --------------------------------------------------------------
     logger.info("Trackarr v2 starting up...")
 
-    network_info = await detect()
+    network_info = await detect(vpn_container=env.vpn_container)
     app.state.network_info   = network_info
     app.state.connection_mode = network_info["mode"]
 
